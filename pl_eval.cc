@@ -96,7 +96,7 @@ SV* pl_eval(pTHX_ V8Context* ctx, const char* code, const char* file)
             if (!ok) {
                 break;
             }
-            origin = new ScriptOrigin(name);
+            origin = new ScriptOrigin(ctx->isolate, name);
             if (!origin) {
                 break;
             }

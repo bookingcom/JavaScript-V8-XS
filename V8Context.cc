@@ -390,12 +390,8 @@ void V8Context::initialize_v8()
     sprintf(icu_dtl_data, "%s/%s", data_path, ICU_DTL_DATA);
     V8::InitializeICUDefaultLocation(PROGRAM_NAME, icu_dtl_data);
 
-    /* initialize V8 with the appropriate blob files */
-    char natives_blob[1024];
-    char snapshot_blob[1024];
-    sprintf(natives_blob, "%s/%s", data_path, V8_NATIVES_BLOB);
-    sprintf(snapshot_blob, "%s/%s", data_path, V8_SNAPSHOT_BLOB);
-    V8::InitializeExternalStartupData(natives_blob, snapshot_blob);
+    /* tell V8 where the startup files can be located */
+    V8::InitializeExternalStartupData(data_path);
 
     platform = v8::platform::NewDefaultPlatform();
     V8::InitializePlatform(platform.get());
@@ -408,7 +404,7 @@ void V8Context::terminate_v8()
         return;
     }
     V8::Dispose();
-    V8::ShutdownPlatform();
+    V8::DisposePlatform();
 }
 
 uint64_t V8Context::GetTypeFlags(const Local<Value>& v)
