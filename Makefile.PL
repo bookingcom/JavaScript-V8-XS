@@ -3,14 +3,6 @@ use warnings;
 use v5.28;
 
 use ExtUtils::MakeMaker;
-use Path::Tiny;
-use JSON::XS;
-
-my @V8_CC_OPTS;
-my @V8_CC_DEFS;
-my @V8_CC_WRNS;
-my @V8_CC_INCD;
-my @V8_LD_LIBD;
 
 use File::Fetch;
 use POSIX();
@@ -83,6 +75,12 @@ if ( ! -d $V8_BASE_DIR ) {
     rmove("${V8_BASE_DIR}.tmp", $V8_BASE_DIR);
 }
 
+my @V8_CC_OPTS;
+my @V8_CC_DEFS;
+my @V8_CC_WRNS;
+my @V8_CC_INCD;
+my @V8_LD_LIBD;
+
 push @V8_CC_INCD, $V8_INCLUDE_DIR;
 push @V8_LD_LIBD, $V8_LIB_DIR;
 
@@ -122,10 +120,15 @@ WriteMakefile(
     LICENSE        => 'mit',
     MIN_PERL_VERSION => 5.028000,
     PREREQ_PM      => {
-        'JSON::PP'        => 0,
         'Text::Trim'      => 0,
         'XSLoader'        => 0,
         'ExtUtils::XSpp'  => '0.11',
+        'File::Fetch'     => 0,
+        'Digest::SHA'     => 0,
+        'Archive::Tar'    => 0,
+        'File::Path'      => 0,
+        'File::Basename'  => 0,
+        'File::Copy::Recursive' => 0,
     },
     TEST_REQUIRES  => {
         'Data::Dumper'    => 0,
