@@ -46,6 +46,8 @@ struct FuncData {
 
 static const char* get_typeof(const Local<Object>& object);
 
+static bool is_perl_func(const Local<Object> &object, const Local<Context> &context, Isolate *isolate);
+
 static void perl_caller(const FunctionCallbackInfo<Value>& args)
 {
     Isolate* isolate = args.GetIsolate();
@@ -133,10 +135,10 @@ static SV* pl_v8_to_perl_impl(pTHX_ V8Context* ctx, const Local<Object>& object,
         ret = newSVpvn(*val, val.length());
         SvUTF8_on(ret); /* yes, always */
     }
-    else if (object->IsFunction()) {
+    else if (object->IsFunction()){
         Local<Name> v8_key = String::NewFromUtf8(ctx->isolate, "__perl_callback", NewStringType::kNormal).ToLocalChecked();
         Local<Value> key_val;
-        if (object->Get(context, v8_key).ToLocal(&key_val)) {
+        if (is_perl_func(object, context, ctx->isolate) && object->Get(context, v8_key).ToLocal(&key_val)) {
             Local<External> v8_val = Local<External>::Cast(key_val);
             FuncData* data = (FuncData*) v8_val->Value();
             if (data && data->func) {
@@ -223,6 +225,20 @@ static SV* pl_v8_to_perl_impl(pTHX_ V8Context* ctx, const Local<Object>& object,
         croak("Don't know how to deal with this thing\n");
     }
     return ret;
+}
+
+static bool is_perl_func(const Local<Object>& object, const Local<Context>& context, Isolate *isolate)
+{
+    String::Utf8Value detailedName(isolate, object->ToDetailString(context).ToLocalChecked());
+    if (!object->IsFunction())
+    {
+        return false;
+    }
+    Local<Function> func = Local<Function>::Cast(object);
+
+    Local<Name> v8_key = String::NewFromUtf8(isolate, "__perl_callback", NewStringType::kNormal).ToLocalChecked();
+    MaybeLocal<Value> v = func->Get(context, v8_key).ToLocalChecked();
+    return !(v.IsEmpty() || v.ToLocalChecked()->IsNullOrUndefined());
 }
 
 static const Local<Object> pl_perl_to_v8_impl(pTHX_ SV* value, V8Context* ctx, MapP2J& seen, int ref)
