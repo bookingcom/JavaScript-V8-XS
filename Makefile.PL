@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use 5.008009;
+use v5.28;
 
 use ExtUtils::MakeMaker;
 use Path::Tiny;
@@ -14,65 +14,105 @@ my @V8_LD_OPTS;
 my @V8_LD_LIBN;
 my @V8_LD_LIBD;
 
-# These defaults assume that you have installed the relevant version X of V8
-# under /opt/V8/X, where you have directories include, lib and data.
-my $V8_DEFAULT_VERSION  = 7;
-my $V8_DEFAULT_ROOT_DIR = '/opt/V8';
-my $V8_DEFAULT_INCLUDE  = 'include';
-my $V8_DEFAULT_LIB      = 'lib';
-my $V8_DEFAULT_DATA     = 'data';
+use File::Fetch;
+use POSIX();
+use Digest::SHA;
+use Archive::Tar;
+use File::Path qw(make_path);
+use File::Basename qw(dirname basename);
+use File::Copy::Recursive qw(rmove);
 
-# Examples for changing the V8 configuration:
-#
-#   V8_VERSION=7 perl Makefile.PL                # use V8 version 7 from /opt/V8/7/...
-#   V8_ROOT_DIR=/usr/local/V8 perl Makefile.PL   # use V8 version 7 from /usr/local/V8/7...
-#   V8_DATA_DIR=/tmp/blobs perl Makefile.PL      # use defaults but get V8 data blobs from /tmp/blobs
+my ($sysname, $machine) = (POSIX::uname)[0, -1];
+$sysname = lc($sysname);
 
-my %config;
-my $path = path('./config.json');
-if ($path && $path->is_file()) {
-    my $data = JSON::XS->new->relaxed->decode($path->slurp());
-    %config = %$data if $data;
+my $NODEJS_VERSION = $ENV{NODEJS_VERSION} // '20.12.1.0';
+my $RUBYGEMS = $ENV{RUBYGEMS} // "https://rubygems.org/downloads";
+my $NODEJS_URL = "${RUBYGEMS}/libv8-node-${NODEJS_VERSION}-${machine}-${sysname}.gem";
+
+my $NODEJS_INTEGRITIES = {
+    "20.12.1.0" => {
+        darwin => {
+            arm64 => "bae2867eff6c26245cd8e4c73122adba93391b2a14210e8719613afa83e437cd",
+            x86_64 => "3520d312c334f6bcd8051c8c5ff3432c3430c0fd857d5a547c68975be1c2f671",
+        },
+        linux => {
+            aarch64 => "6604cb511723d438150377ce77b957138157358fb618e713ec438fa8f3c013cf",
+            x86_64 => "8d58e74037a3cf45145579289cc099c2dbd6a02a77b5a899426a63cb2c8d64e7",
+        }
+    },
+};
+
+my $NODEJS_INTEGRITY = $ENV{NODEJS_INTEGRITY} // $NODEJS_INTEGRITIES->{$NODEJS_VERSION}->{$sysname}->{$machine};
+
+my $V8_BASE_DIR = $ENV{V8_BASE_DIR} // "libv8/${NODEJS_VERSION}/${sysname}/${machine}";
+my $V8_INCLUDE_DIR = $ENV{V8_INCLUDE_DIR} // join('/', $V8_BASE_DIR, 'vendor', 'v8', 'include');
+my $V8_LIB_DIR = $ENV{V8_LIB_DIR} // join('/', $V8_BASE_DIR, 'vendor', 'v8', "${machine}-${sysname}", "libv8", "obj");
+
+if ( ! -d $V8_BASE_DIR ) {
+    say STDERR "downloading: $NODEJS_URL";
+    use Data::Dumper;
+
+    my $fetcher = File::Fetch->new(uri => $NODEJS_URL);
+
+    my $file = $fetcher->fetch() or die $fetcher->error;
+
+    if ($NODEJS_INTEGRITY) {
+        my $sha = Digest::SHA->new(256);
+        $sha->addfile($file);
+        my $sha_hex = $sha->hexdigest;
+        die "Integrity check failed: expected $NODEJS_INTEGRITY, got $sha_hex" if $sha_hex ne $NODEJS_INTEGRITY;
+    }
+
+    my $tar = Archive::Tar->new;
+    $tar->read($file);
+    $tar->extract_file("data.tar.gz", "libv8-${NODEJS_VERSION}-${sysname}-${machine}.tar.gz") or die "Failed to extract data.tar.gz";
+
+    $tar = Archive::Tar->new;
+    $tar->read("libv8-${NODEJS_VERSION}-${sysname}-${machine}.tar.gz");
+    my @files = $tar->list_files();
+    @files = grep { m!^vendor/! } @files;
+
+    for my $file (@files) {
+        my $dirname = dirname($file);
+        make_path("${V8_BASE_DIR}.tmp/${dirname}");
+        my $basename = basename($file);
+        $tar->extract_file($file, "${V8_BASE_DIR}.tmp/${file}") or die "Failed to extract $file";
+    }
+
+    unlink("libv8-${NODEJS_VERSION}-${sysname}-${machine}.tar.gz");
+    unlink($file);
+
+    rmove("${V8_BASE_DIR}.tmp", $V8_BASE_DIR);
 }
-my $V8_VERSION  = $ENV{V8_VERSION}  // $config{V8_VERSION}  // $V8_DEFAULT_VERSION;
-my $V8_ROOT_DIR = $ENV{V8_ROOT_DIR} // $config{V8_ROOT_DIR} // $V8_DEFAULT_ROOT_DIR;
-my $V8_INCLUDE  = $ENV{V8_INCLUDE}  // $config{V8_INCLUDE}  // $V8_DEFAULT_INCLUDE;
-my $V8_LIB      = $ENV{V8_LIB}      // $config{V8_LIB}      // $V8_DEFAULT_LIB;
-my $V8_DATA     = $ENV{V8_DATA}     // $config{V8_DATA}     // $V8_DEFAULT_DATA;
-
-my $V8_BASE_DIR = $ENV{V8_BASE_DIR} // join('/', $V8_ROOT_DIR, $V8_VERSION);
-
-my $V8_INCLUDE_DIR = $ENV{V8_INCLUDE_DIR} // join('/', $V8_BASE_DIR, $V8_INCLUDE);
-my $V8_LIB_DIR     = $ENV{V8_LIB_DIR}     // join('/', $V8_BASE_DIR, $V8_LIB);
-my $V8_DATA_DIR    = $ENV{V8_DATA_DIR}    // join('/', $V8_BASE_DIR, $V8_DATA);
 
 push @V8_CC_INCD, $V8_INCLUDE_DIR;
 push @V8_LD_LIBD, $V8_LIB_DIR;
 
-push @V8_CC_OPTS, qw< -O2 -std=c++14 >;
+push @V8_CC_OPTS, qw< -O2 -std=c++17 >;
 push @V8_CC_WRNS, qw< all extra no-unused-parameter >;
-push @V8_LD_LIBN, qw< v8 v8_libbase v8_libplatform icuuc icui18n >;
 
-push @V8_CC_DEFS, join('=', 'V8_DATA_DIR', $V8_DATA_DIR);
+# this is not provided any more by v8
+my $V8_DATA_DIR    = $ENV{V8_DATA_DIR}    // join('/', $V8_BASE_DIR, 'data');
+push @V8_CC_DEFS, "V8_DATA_DIR='${V8_DATA_DIR}'";
 
 if ($^O eq 'linux') {
-    push @V8_CC_DEFS, qw< PERL_JAVASCRIPT_V8_XS_LINUX >;
+     push @V8_CC_DEFS, qw< PERL_JAVASCRIPT_V8_XS_LINUX >;
 
-    # these apply only on linux, where the V8 build has to ignore standard
-    # include files and instead looks at its own internal libc++ files
-    push @V8_CC_OPTS, qw< -nostdinc++ >;
-    push @V8_CC_INCD, map { "$V8_INCLUDE_DIR/$_/include" } qw< libc++ libc++abi >;
-    push @V8_CC_DEFS, qw< _LIBCPP_ABI_UNSTABLE >;
-    push @V8_CC_DEFS, join('=', '_LIBCPP_ABI_VERSION', 'Cr');
+#     # these apply only on linux, where the V8 build has to ignore standard
+#     # include files and instead looks at its own internal libc++ files
+#     push @V8_CC_OPTS, qw< -nostdinc++ >;
+#     push @V8_CC_INCD, map { "$V8_INCLUDE_DIR/$_/include" } qw< libc++ libc++abi >;
+#     push @V8_CC_DEFS, qw< _LIBCPP_ABI_UNSTABLE >;
+#     push @V8_CC_DEFS, join('=', '_LIBCPP_ABI_VERSION', 'Cr');
 
 }
 
 if ($^O eq 'darwin') {
-    push @V8_CC_DEFS, qw< PERL_JAVASCRIPT_V8_XS_DARWIN >;
+     push @V8_CC_DEFS, qw< PERL_JAVASCRIPT_V8_XS_DARWIN >;
 }
 
-my $CC = 'c++';
-my $LD = 'c++';
+my $CC = $ENV{CC} // 'c++';
+my $LD = $ENV{LD} // 'c++';
 
 my $CC_OPTS = join(' ',
     (@V8_CC_OPTS),
@@ -80,6 +120,9 @@ my $CC_OPTS = join(' ',
     (map { "-W$_" } @V8_CC_WRNS),
     (map { "-I$_" } @V8_CC_INCD),
 );
+
+push @V8_LD_LIBN, "v8_monolith";
+
 my $LD_OPTS = join(' ',
     (@V8_LD_OPTS),
     (map { "-L$_" } @V8_LD_LIBD),
@@ -92,7 +135,7 @@ WriteMakefile(
     VERSION_FROM   => 'lib/JavaScript/V8/XS.pm',
     ABSTRACT_FROM  => 'lib/JavaScript/V8/XS.pm',
     LICENSE        => 'mit',
-    MIN_PERL_VERSION => 5.018000,
+    MIN_PERL_VERSION => 5.028000,
     PREREQ_PM      => {
         'JSON::PP'        => 0,
         'Text::Trim'      => 0,
