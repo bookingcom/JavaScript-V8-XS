@@ -10,8 +10,6 @@ my @V8_CC_OPTS;
 my @V8_CC_DEFS;
 my @V8_CC_WRNS;
 my @V8_CC_INCD;
-my @V8_LD_OPTS;
-my @V8_LD_LIBN;
 my @V8_LD_LIBD;
 
 use File::Fetch;
@@ -95,16 +93,12 @@ push @V8_CC_WRNS, qw< all extra no-unused-parameter >;
 my $V8_DATA_DIR    = $ENV{V8_DATA_DIR}    // join('/', $V8_BASE_DIR, 'data');
 push @V8_CC_DEFS, "V8_DATA_DIR='${V8_DATA_DIR}'";
 
+my $V8_LIB_FLAGS = "";
+
 if ($^O eq 'linux') {
      push @V8_CC_DEFS, qw< PERL_JAVASCRIPT_V8_XS_LINUX >;
 
-#     # these apply only on linux, where the V8 build has to ignore standard
-#     # include files and instead looks at its own internal libc++ files
-#     push @V8_CC_OPTS, qw< -nostdinc++ >;
-#     push @V8_CC_INCD, map { "$V8_INCLUDE_DIR/$_/include" } qw< libc++ libc++abi >;
-#     push @V8_CC_DEFS, qw< _LIBCPP_ABI_UNSTABLE >;
-#     push @V8_CC_DEFS, join('=', '_LIBCPP_ABI_VERSION', 'Cr');
-
+    $V8_LIB_FLAGS = "-lstdc++";
 }
 
 if ($^O eq 'darwin') {
@@ -119,15 +113,6 @@ my $CC_OPTS = join(' ',
     (map { "-D$_" } @V8_CC_DEFS),
     (map { "-W$_" } @V8_CC_WRNS),
     (map { "-I$_" } @V8_CC_INCD),
-);
-
-push @V8_LD_LIBN, "v8_monolith";
-
-my $LD_OPTS = join(' ',
-    (@V8_LD_OPTS),
-    (map { "-L$_" } @V8_LD_LIBD),
-    (map { "-l$_" } @V8_LD_LIBN),
-    (map { "-Wl,-rpath,$_" } @V8_LD_LIBD),
 );
 
 WriteMakefile(
@@ -163,8 +148,7 @@ WriteMakefile(
     depend             => { 'v8-perl.c' => 'JavaScript-V8-XS-Context.xsp' },
 
     # linker settings
-    LD                 => "$LD $LD_OPTS",
-    OBJECT             => '$(O_FILES)',
+    OBJECT             => '$(O_FILES) ' . "${V8_LIB_DIR}/libv8_monolith.a $V8_LIB_FLAGS",
 
     # precompiler settings
     XSOPT              => '-C++ -hiertype',
