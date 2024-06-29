@@ -404,7 +404,11 @@ void V8Context::terminate_v8()
         return;
     }
     V8::Dispose();
+#if V8_MAJOR_VERSION > 9
     V8::DisposePlatform();
+#else
+    V8::ShutdownPlatform();
+#endif
 }
 
 uint64_t V8Context::GetTypeFlags(const Local<Value>& v)

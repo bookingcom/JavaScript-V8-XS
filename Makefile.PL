@@ -30,6 +30,16 @@ my $NODEJS_INTEGRITIES = {
             x86_64 => "8d58e74037a3cf45145579289cc099c2dbd6a02a77b5a899426a63cb2c8d64e7",
         }
     },
+    "16.20.0.0" => {
+        darwin => {
+            arm64 => "2f7cf8ef0647c4fa8f17d1197fa50ef55fae88c26a77ff721848dc02fd5f6b2e",
+            x86_64 => "68f02186c66e49f337f938e3819536404a571becf77234a758958f603fee014a",
+        },
+        linux => {
+            aarch64 => "c863521c1c84033db7b7377ad1810b902d228505e043f26aa3922ab4695b49a7",
+            x86_64 => "27c7cc9a733e727ad1a98aeadee4ebf4a240aa907d265200c485b1286edb71f3",
+        }
+    },
 };
 
 my $NODEJS_INTEGRITY = $ENV{NODEJS_INTEGRITY} // $NODEJS_INTEGRITIES->{$NODEJS_VERSION}->{$sysname}->{$machine};
@@ -98,6 +108,8 @@ if ($^O eq 'linux') {
 
     $V8_LIB_FLAGS = "-lstdc++";
 }
+
+$V8_LIB_FLAGS=$ENV{V8_LIB_FLAGS} // $V8_LIB_FLAGS;
 
 if ($^O eq 'darwin') {
      push @V8_CC_DEFS, qw< PERL_JAVASCRIPT_V8_XS_DARWIN >;

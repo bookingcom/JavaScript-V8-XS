@@ -96,7 +96,11 @@ SV* pl_eval(pTHX_ V8Context* ctx, const char* code, const char* file)
             if (!ok) {
                 break;
             }
+#if V8_MAJOR_VERSION > 8
             origin = new ScriptOrigin(ctx->isolate, name);
+#else
+            origin = new ScriptOrigin(name);
+#endif
             if (!origin) {
                 break;
             }
