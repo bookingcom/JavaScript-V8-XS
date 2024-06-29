@@ -125,6 +125,20 @@ my $CC_OPTS = join(' ',
     (map { "-I$_" } @V8_CC_INCD),
 );
 
+my $NON_LAZY = $ENV{PERL_DL_NONLAZY} // 1;
+{
+    package ExtUtils::MM_Unix; # so that "SUPER" works right
+    sub test_via_harness {
+        my($self, $perl, $tests) = @_;
+        return $self->SUPER::test_via_harness("PERL_DL_NONLAZY=${NON_LAZY} $perl", $tests);
+    }
+
+    sub test_via_script {
+        my($self, $perl, $script) = @_;
+        return $self->SUPER::test_via_script("PERL_DL_NONLAZY=${NON_LAZY} $perl", $script);
+    }
+}
+
 WriteMakefile(
     NAME           => 'JavaScript::V8::XS',
     VERSION_FROM   => 'lib/JavaScript/V8/XS.pm',
