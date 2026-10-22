@@ -29,6 +29,27 @@
 int V8Context::instance_count = 0;
 std::unique_ptr<v8::Platform> V8Context::platform = 0;
 
+/*
+ * Raise a deferred error (see pl_util.h).  This must only be called once
+ * every V8 scope object (ENTER_SCOPE, HandleScope, ...) has gone out of
+ * scope, which is why the public methods below run their body in a nested
+ * block and call this afterwards.  If 'leak' is given it is released first,
+ * because the XS glue will never see it once we croak.
+ */
+static void raise_pending_error(SV* leak = 0)
+{
+    if (!pl_has_pending_error()) {
+        return;
+    }
+    dTHX;
+    if (leak && !SvIMMORTAL(leak)) {
+        SvREFCNT_dec(leak);
+    }
+    SV* msg = sv_2mortal(newSVpv(pl_get_pending_error(), 0));
+    pl_clear_pending_error();
+    croak_sv(msg);
+}
+
 V8Context::V8Context(HV* opt)
     : isolate(0),
       persistent_context(0),
@@ -92,6 +113,7 @@ V8Context::V8Context(HV* opt)
     create_params.array_buffer_allocator =
         ArrayBuffer::Allocator::NewDefaultAllocator();
     set_up();
+    raise_pending_error();
 }
 
 V8Context::~V8Context()
@@ -112,116 +134,155 @@ V8Context::~V8Context()
 
 SV* V8Context::get(const char* name)
 {
-    ENTER_SCOPE;
-    set_up();
+    SV* ret = 0;
+    {
+        ENTER_SCOPE;
+        set_up();
 
-    Perf perf;
-    pl_stats_start(aTHX_ this, &perf);
-    SV* ret = pl_get_global_or_property(aTHX_ this, name);
-    pl_stats_stop(aTHX_ this, &perf, "get");
+        Perf perf;
+        pl_stats_start(aTHX_ this, &perf);
+        ret = pl_get_global_or_property(aTHX_ this, name);
+        pl_stats_stop(aTHX_ this, &perf, "get");
+    }
+    raise_pending_error(ret);
     return ret;
 }
 
 SV* V8Context::exists(const char* name)
 {
-    ENTER_SCOPE;
-    set_up();
+    SV* ret = 0;
+    {
+        ENTER_SCOPE;
+        set_up();
 
-    Perf perf;
-    pl_stats_start(aTHX_ this, &perf);
-    SV* ret = pl_exists_global_or_property(aTHX_ this, name);
-    pl_stats_stop(aTHX_ this, &perf, "exists");
+        Perf perf;
+        pl_stats_start(aTHX_ this, &perf);
+        ret = pl_exists_global_or_property(aTHX_ this, name);
+        pl_stats_stop(aTHX_ this, &perf, "exists");
+    }
+    raise_pending_error(ret);
     return ret;
 }
 
 SV* V8Context::typeof(const char* name)
 {
-    ENTER_SCOPE;
-    set_up();
+    SV* ret = 0;
+    {
+        ENTER_SCOPE;
+        set_up();
 
-    Perf perf;
-    pl_stats_start(aTHX_ this, &perf);
-    SV* ret = pl_typeof_global_or_property(aTHX_ this, name);
-    pl_stats_stop(aTHX_ this, &perf, "typeof");
+        Perf perf;
+        pl_stats_start(aTHX_ this, &perf);
+        ret = pl_typeof_global_or_property(aTHX_ this, name);
+        pl_stats_stop(aTHX_ this, &perf, "typeof");
+    }
+    raise_pending_error(ret);
     return ret;
 }
 
 SV* V8Context::instanceof(const char* oname, const char* cname)
 {
-    ENTER_SCOPE;
-    set_up();
+    SV* ret = 0;
+    {
+        ENTER_SCOPE;
+        set_up();
 
-    Perf perf;
-    pl_stats_start(aTHX_ this, &perf);
-    SV* ret = pl_instanceof_global_or_property(aTHX_ this, oname, cname);
-    pl_stats_stop(aTHX_ this, &perf, "instanceof");
+        Perf perf;
+        pl_stats_start(aTHX_ this, &perf);
+        ret = pl_instanceof_global_or_property(aTHX_ this, oname, cname);
+        pl_stats_stop(aTHX_ this, &perf, "instanceof");
+    }
+    raise_pending_error(ret);
     return ret;
 }
 
 void V8Context::set(const char* name, SV* value)
 {
-    ENTER_SCOPE;
-    set_up();
+    {
+        ENTER_SCOPE;
+        set_up();
 
-    Perf perf;
-    pl_stats_start(aTHX_ this, &perf);
-    pl_set_global_or_property(aTHX_ this, name, value);
-    pl_stats_stop(aTHX_ this, &perf, "set");
+        Perf perf;
+        pl_stats_start(aTHX_ this, &perf);
+        pl_set_global_or_property(aTHX_ this, name, value);
+        pl_stats_stop(aTHX_ this, &perf, "set");
+    }
+    raise_pending_error();
 }
 
 void V8Context::remove(const char* name)
 {
-    ENTER_SCOPE;
-    set_up();
+    {
+        ENTER_SCOPE;
+        set_up();
 
-    Perf perf;
-    pl_stats_start(aTHX_ this, &perf);
-    pl_del_global_or_property(aTHX_ this, name);
-    pl_stats_stop(aTHX_ this, &perf, "remove");
+        Perf perf;
+        pl_stats_start(aTHX_ this, &perf);
+        pl_del_global_or_property(aTHX_ this, name);
+        pl_stats_stop(aTHX_ this, &perf, "remove");
+    }
+    raise_pending_error();
 }
 
 SV* V8Context::eval(const char* code, const char* file)
 {
-    ENTER_SCOPE;
-    set_up();
+    SV* ret = 0;
+    {
+        ENTER_SCOPE;
+        set_up();
 
-    /* performance is tracked inside this call */
-    return pl_eval(aTHX_ this, code, file);
+        /* performance is tracked inside this call */
+        ret = pl_eval(aTHX_ this, code, file);
+    }
+    raise_pending_error(ret);
+    return ret;
 }
 
 SV* V8Context::dispatch_function_in_event_loop(const char* func)
 {
-    ENTER_SCOPE;
-    set_up();
+    SV* ret = 0;
+    {
+        ENTER_SCOPE;
+        set_up();
 
-    Perf perf;
-    pl_stats_start(aTHX_ this, &perf);
-    SV* ret = pl_run_function_in_event_loop(aTHX_ this, func);
-    pl_stats_stop(aTHX_ this, &perf, "dispatch");
+        Perf perf;
+        pl_stats_start(aTHX_ this, &perf);
+        ret = pl_run_function_in_event_loop(aTHX_ this, func);
+        pl_stats_stop(aTHX_ this, &perf, "dispatch");
+    }
+    raise_pending_error(ret);
     return ret;
 }
 
 SV* V8Context::global_objects()
 {
-    ENTER_SCOPE;
-    set_up();
+    SV* ret = 0;
+    {
+        ENTER_SCOPE;
+        set_up();
 
-    Perf perf;
-    pl_stats_start(aTHX_ this, &perf);
-    SV* ret = pl_global_objects(aTHX_ this);
-    pl_stats_stop(aTHX_ this, &perf, "global_objects");
+        Perf perf;
+        pl_stats_start(aTHX_ this, &perf);
+        ret = pl_global_objects(aTHX_ this);
+        pl_stats_stop(aTHX_ this, &perf, "global_objects");
+    }
+    raise_pending_error(ret);
     return ret;
 }
 
 int V8Context::run_gc()
 {
-    ENTER_SCOPE;
-    set_up();
+    int ret = 0;
+    {
+        ENTER_SCOPE;
+        set_up();
 
-    Perf perf;
-    pl_stats_start(aTHX_ this, &perf);
-    int ret = pl_run_gc(this);
-    pl_stats_stop(aTHX_ this, &perf, "run_gc");
+        Perf perf;
+        pl_stats_start(aTHX_ this, &perf);
+        ret = pl_run_gc(this);
+        pl_stats_stop(aTHX_ this, &perf, "run_gc");
+    }
+    raise_pending_error();
     return ret;
 }
 
@@ -332,6 +393,7 @@ void V8Context::reset()
 {
     tear_down();
     set_up();
+    raise_pending_error();
 }
 
 const char* get_data_path()

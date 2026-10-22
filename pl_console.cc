@@ -41,7 +41,8 @@ static void save_msg(pTHX_ V8Context* ctx, const char* target, SV* message)
         SvREFCNT_inc(pvalue);
     }
     else {
-        croak("Could not store message in target %*.*s\n", (int) tlen, (int) tlen, target);
+        /* console callbacks run under V8 scopes: never croak() here */
+        pl_set_pending_error("Could not store message in target %*.*s\n", (int) tlen, (int) tlen, target);
     }
 }
 

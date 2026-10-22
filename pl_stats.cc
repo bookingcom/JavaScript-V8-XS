@@ -13,7 +13,7 @@ static void save_stat(pTHX_ V8Context* ctx, const char* category, const char* na
         SV* ref = SvRV(*found);
         /* value not a valid hashref? bail out */
         if (SvTYPE(ref) != SVt_PVHV) {
-            croak("Found category %s in stats but it is not a hashref\n", category);
+            pl_set_pending_error("Found category %s in stats but it is not a hashref\n", category);
             return;
         }
         data = (HV*) ref;
@@ -25,7 +25,8 @@ static void save_stat(pTHX_ V8Context* ctx, const char* category, const char* na
             SvREFCNT_inc(ref);
         }
         else {
-            croak("Could not create category %s in stats\n", category);
+            pl_set_pending_error("Could not create category %s in stats\n", category);
+            return;
         }
     }
 
@@ -34,7 +35,7 @@ static void save_stat(pTHX_ V8Context* ctx, const char* category, const char* na
         SvREFCNT_inc(pvalue);
     }
     else {
-        croak("Could not create entry %s for category %s in stats\n", name, category);
+        pl_set_pending_error("Could not create entry %s for category %s in stats\n", name, category);
     }
 }
 

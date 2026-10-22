@@ -1,4 +1,6 @@
 #include <map>
+#include <vector>
+#include "pl_util.h"
 #include "pl_stats.h"
 #include "pl_console.h"
 #include "pl_v8.h"
@@ -46,69 +48,117 @@ struct FuncData {
 
 static const char* get_typeof(const Local<Object>& object);
 
-static bool is_perl_func(const Local<Object> &object, const Local<Context> &context, Isolate *isolate);
-
 static void perl_caller(const FunctionCallbackInfo<Value>& args)
 {
     Isolate* isolate = args.GetIsolate();
-#if 1
     HandleScope handle_scope(isolate);
-#endif
 
-#if 1
     Local<External> v8_val = Local<External>::Cast(args.Data());
-#else
-    /*
-     * If args.This() returned the same bject as GetFunction() on the function
-     * template we used to create the function, this would work; alas, it
-     * doesn't work, so we have to pass the data we want so that args.Data()
-     * can return it.
-     */
-    Local<Name> v8_key = String::NewFromUtf8(isolate, "__perl_callback", NewStringType::kNormal).ToLocalChecked();
-    Local<Function> v8_func = Local<Function>::Cast(args.This());
-    Local<External> v8_val = Local<External>::Cast(v8_func->Get(v8_key));
-#endif
     FuncData* data = (FuncData*) v8_val->Value();
 
-    SV* ret = 0;
-    SV *err_tmp;
+    SV* error = 0;
 
     /* prepare Perl environment for calling the CV */
     dTHX;
-    dSP;
     ENTER;
     SAVETMPS;
-    PUSHMARK(SP);
 
-    /* pass in the stack each of the params we received */
+    /* convert each of the params we received; they are all mortal */
     int nargs = args.Length();
+    std::vector<SV*> argv;
+    argv.reserve(nargs);
     for (int j = 0; j < nargs; j++) {
         Local<Value> arg = Local<Value>::Cast(args[j]);
         Local<Object> object = Local<Object>::Cast(arg);
-        SV* val = pl_v8_to_perl(aTHX_ data->ctx, object);
-        mXPUSHs(val);
+        SV* val = sv_2mortal(pl_v8_to_perl(aTHX_ data->ctx, object));
+        argv.push_back(val);
     }
 
-    /* call actual Perl CV, passing all params */
-    PUTBACK;
-    call_sv(data->func, G_SCALAR | G_EVAL);
-    SPAGAIN;
-
-    err_tmp = ERRSV;
-    if (SvTRUE(err_tmp)) {
-        croak("Perl sub died with error: %s", SvPV_nolen(err_tmp));
+    if (pl_has_pending_error()) {
+        /* could not convert the arguments: do not call the Perl sub at all */
+        error = newSVpv(pl_get_pending_error(), 0);
+        pl_clear_pending_error();
     }
+    else {
+        dSP;
+        PUSHMARK(SP);
+        EXTEND(SP, nargs);
+        for (int j = 0; j < nargs; j++) {
+            PUSHs(argv[j]);
+        }
+        PUTBACK;
 
-    /* get returned value from Perl and return it */
-    ret = POPs;
-    Local<Object> object = pl_perl_to_v8(aTHX_ ret, data->ctx);
+        /* call actual Perl CV, passing all params */
+        call_sv(data->func, G_SCALAR | G_EVAL);
+        SPAGAIN;
 
-    args.GetReturnValue().Set(object);
+        SV* err_tmp = ERRSV;
+        if (SvTRUE(err_tmp)) {
+            /* G_SCALAR|G_EVAL leaves a single undef on the stack when the sub dies */
+            (void) POPs;
+            PUTBACK;
+            /* copy the error: FREETMPS/LEAVE below may free the original */
+            error = newSVpvs("Perl sub died with error: ");
+            sv_catsv(error, err_tmp);
+        }
+        else {
+            /* get returned value from Perl and return it */
+            SV* ret = POPs;
+            /*
+             * Restore the Perl stack pointer before converting: the conversion
+             * may run Perl code (overloaded bool/"" or tied values), which can
+             * reallocate the stack and make our local SP stale.
+             */
+            PUTBACK;
+            Local<Object> object = pl_perl_to_v8(aTHX_ ret, data->ctx);
+            if (pl_has_pending_error()) {
+                error = newSVpv(pl_get_pending_error(), 0);
+                pl_clear_pending_error();
+            }
+            else {
+                args.GetReturnValue().Set(object);
+            }
+        }
+    }
 
     /* cleanup */
-    PUTBACK;
     FREETMPS;
     LEAVE;
+
+    if (error) {
+        /*
+         * Never call croak() from inside a V8 callback.  It longjmp()s through
+         * the C++ frames of V8 that are on the stack at this point (HandleScope,
+         * Isolate::Scope, TryCatch, Context::Scope, ...), so their destructors
+         * never run and the isolate is left "entered".  Nothing crashes right
+         * away, but the next Isolate::Dispose() (V8Context::tear_down) aborts
+         * the whole process with:
+         *
+         *   Fatal error in v8::Isolate::Dispose()
+         *   Disposing the isolate that is entered by a thread.
+         *
+         * and if the isolate is used again before that, the next GC crashes
+         * with a SIGSEGV in v8::internal::Relocatable::Iterate.
+         *
+         * Instead:
+         *  - throw the error as a JS exception, so that the running script
+         *    unwinds the way any JS error does (JS may even catch it), and
+         *  - record it as the pending error, so that the V8Context method
+         *    that is running the script (eval, dispatch_function_in_event_loop,
+         *    ...) croak()s with it once all V8 scopes are closed.
+         * The Perl caller therefore still gets "Perl sub died with error: ...",
+         * exactly as before, just from a place where it is safe to die.
+         */
+        STRLEN elen = 0;
+        const char* estr = SvPV(error, elen);
+        Local<String> msg;
+        if (!String::NewFromUtf8(isolate, estr, NewStringType::kNormal, (int) elen).ToLocal(&msg)) {
+            msg = String::NewFromUtf8(isolate, "Perl sub died", NewStringType::kNormal).ToLocalChecked();
+        }
+        pl_set_pending_error("%s", estr);
+        SvREFCNT_dec(error);
+        isolate->ThrowException(Exception::Error(msg));
+    }
 }
 
 static SV* pl_v8_to_perl_impl(pTHX_ V8Context* ctx, const Local<Object>& object, MapJ2P& seen)
@@ -135,14 +185,22 @@ static SV* pl_v8_to_perl_impl(pTHX_ V8Context* ctx, const Local<Object>& object,
         ret = newSVpvn(*val, val.length());
         SvUTF8_on(ret); /* yes, always */
     }
-    else if (object->IsFunction()){
+    else if (object->IsFunction()) {
         Local<Name> v8_key = String::NewFromUtf8(ctx->isolate, "__perl_callback", NewStringType::kNormal).ToLocalChecked();
         Local<Value> key_val;
-        if (is_perl_func(object, context, ctx->isolate) && object->Get(context, v8_key).ToLocal(&key_val)) {
+        /*
+         * Only functions that were created from a Perl CV carry our External
+         * in "__perl_callback".  A plain JS function returns undefined here,
+         * and casting that to External and dereferencing Value() reads garbage
+         * memory (a genuine SIGSEGV source), so check IsExternal() first.
+         * Plain JS functions have no Perl equivalent: they become undef.
+         */
+        if (object->Get(context, v8_key).ToLocal(&key_val) && key_val->IsExternal()) {
             Local<External> v8_val = Local<External>::Cast(key_val);
             FuncData* data = (FuncData*) v8_val->Value();
             if (data && data->func) {
-                ret = data->func;
+                /* the caller owns (mortalizes) the returned SV; FuncData keeps its own reference */
+                ret = SvREFCNT_inc_simple_NN(data->func);
             }
         }
     }
@@ -163,14 +221,16 @@ static SV* pl_v8_to_perl_impl(pTHX_ V8Context* ctx, const Local<Object>& object,
             for (int j = 0; j < array_top; ++j) {
                 Local<Value> value;
                 if (!array->Get(context, j).ToLocal(&value)) {
-                    croak("Could not get array element\n");
+                    pl_set_pending_error("Could not get array element\n");
+                    break;
                 }
                 Local<Object> elem = Local<Object>::Cast(value);
                 /* TODO: check we got a valid element */
 
                 SV* nested = sv_2mortal(pl_v8_to_perl_impl(aTHX_ ctx, elem, seen));
                 if (!nested) {
-                    croak("Could not create Perl SV for array\n");
+                    pl_set_pending_error("Could not create Perl SV for array\n");
+                    break;
                 }
                 if (av_store(values_array, j, nested)) {
                     SvREFCNT_inc(nested);
@@ -195,13 +255,20 @@ static SV* pl_v8_to_perl_impl(pTHX_ V8Context* ctx, const Local<Object>& object,
             for (int j = 0; j < hash_top; ++j) {
                 Local<Value> v8_key;
                 if (!property_names->Get(context, j).ToLocal(&v8_key)) {
-                    croak("Could not get object key\n");
+                    pl_set_pending_error("Could not get object key\n");
+                    break;
                 }
 
-                String::Utf8Value key(ctx->isolate, v8_key->ToString(context).ToLocalChecked());
+                Local<String> key_str;
+                if (!v8_key->ToString(context).ToLocal(&key_str)) {
+                    pl_set_pending_error("Could not stringify object key\n");
+                    break;
+                }
+                String::Utf8Value key(ctx->isolate, key_str);
                 Local<Value> value;
                 if (!object->Get(context, v8_key).ToLocal(&value)) {
-                    croak("Could not get object value key\n");
+                    pl_set_pending_error("Could not get object value key\n");
+                    break;
                 }
 
                 Local<Object> obj = Local<Object>::Cast(value);
@@ -209,7 +276,8 @@ static SV* pl_v8_to_perl_impl(pTHX_ V8Context* ctx, const Local<Object>& object,
 
                 SV* nested = sv_2mortal(pl_v8_to_perl_impl(aTHX_ ctx, obj, seen));
                 if (!nested) {
-                    croak("Could not create Perl SV for hash\n");
+                    pl_set_pending_error("Could not create Perl SV for hash\n");
+                    break;
                 }
                 SV* pkey = newSVpvn(*key, key.length());
                 SvUTF8_on(pkey); /* yes, always */
@@ -222,23 +290,9 @@ static SV* pl_v8_to_perl_impl(pTHX_ V8Context* ctx, const Local<Object>& object,
         }
     }
     else {
-        croak("Don't know how to deal with this thing\n");
+        pl_set_pending_error("Don't know how to deal with this thing\n");
     }
     return ret;
-}
-
-static bool is_perl_func(const Local<Object>& object, const Local<Context>& context, Isolate *isolate)
-{
-    String::Utf8Value detailedName(isolate, object->ToDetailString(context).ToLocalChecked());
-    if (!object->IsFunction())
-    {
-        return false;
-    }
-    Local<Function> func = Local<Function>::Cast(object);
-
-    Local<Name> v8_key = String::NewFromUtf8(isolate, "__perl_callback", NewStringType::kNormal).ToLocalChecked();
-    MaybeLocal<Value> v = func->Get(context, v8_key).ToLocalChecked();
-    return !(v.IsEmpty() || v.ToLocalChecked()->IsNullOrUndefined());
 }
 
 static const Local<Object> pl_perl_to_v8_impl(pTHX_ SV* value, V8Context* ctx, MapP2J& seen, int ref)
@@ -295,7 +349,8 @@ static const Local<Object> pl_perl_to_v8_impl(pTHX_ SV* value, V8Context* ctx, M
                     /* TODO: check for validity */
                     /*  croak("Could not create JS element for array\n"); */
                     if (!array->Set(context, j, nested).IsJust()) {
-                        croak("Could not set JS element for array\n");
+                        pl_set_pending_error("Could not set JS element for array\n");
+                        break;
                     }
                 }
             }
@@ -341,7 +396,8 @@ static const Local<Object> pl_perl_to_v8_impl(pTHX_ SV* value, V8Context* ctx, M
 
                     Local<Value> v8_key = String::NewFromUtf8(ctx->isolate, kstr, NewStringType::kNormal).ToLocalChecked();
                     if (!object->Set(context, v8_key, nested).IsJust()) {
-                        croak("Could not create JS element for hash\n");
+                        pl_set_pending_error("Could not create JS element for hash\n");
+                        break;
                     }
                 }
             }
@@ -352,14 +408,14 @@ static const Local<Object> pl_perl_to_v8_impl(pTHX_ SV* value, V8Context* ctx, M
             Local<Name> v8_key = String::NewFromUtf8(ctx->isolate, "__perl_callback", NewStringType::kNormal).ToLocalChecked();
             Local<Function> v8_func = ft->GetFunction(context).ToLocalChecked();
             if (!v8_func->Set(context, v8_key, val).IsJust()) {
-                croak("Could not set JS function pointer");
+                pl_set_pending_error("Could not set JS function pointer\n");
             }
             ret = Local<Object>::Cast(v8_func);
         } else {
-            croak("Don't know how to deal with an undetermined Perl reference\n");
+            pl_set_pending_error("Don't know how to deal with an undetermined Perl reference\n");
         }
     } else {
-        croak("Don't know how to deal with an undetermined Perl object\n");
+        pl_set_pending_error("Don't know how to deal with an undetermined Perl object\n");
     }
     return ret;
 }
@@ -409,7 +465,7 @@ int pl_set_global_or_property(pTHX_ V8Context* ctx, const char* name, SV* value)
     if (found) {
         Local<Object> object = pl_perl_to_v8(aTHX_ value, ctx);
         if (!parent->Set(context, slot, object).IsJust()) {
-            croak("could not set global or property");
+            pl_set_pending_error("could not set global or property\n");
         }
         ret = 1;
     }
@@ -509,9 +565,15 @@ SV* pl_global_objects(pTHX_ V8Context* ctx)
     for (uint32_t j = 0; j < property_names->Length(); ++j) {
         Local<Value> v8_key;
         if (!property_names->Get(context, j).ToLocal(&v8_key)) {
-            croak("could not get name of global object");
+            pl_set_pending_error("could not get name of global object\n");
+            break;
         }
-        String::Utf8Value key(ctx->isolate, v8_key->ToString(context).ToLocalChecked());
+        Local<String> key_str;
+        if (!v8_key->ToString(context).ToLocal(&key_str)) {
+            pl_set_pending_error("could not stringify name of global object\n");
+            break;
+        }
+        String::Utf8Value key(ctx->isolate, key_str);
         SV* name = sv_2mortal(newSVpvn(*key, key.length()));
         if (av_store(values, count, name)) {
             SvREFCNT_inc(name);
@@ -554,7 +616,8 @@ bool find_parent(V8Context* ctx, const char* name, Local<Context>& context, Loca
         if (parent->Has(context, slot).ToChecked()) {
             /* parent has a slot with that name */
             if (!parent->Get(context, slot).ToLocal(&child)) {
-                croak("could not get parent slot");
+                pl_set_pending_error("could not get parent slot\n");
+                break;
             }
         }
         else if (!create) {
@@ -565,7 +628,8 @@ bool find_parent(V8Context* ctx, const char* name, Local<Context>& context, Loca
             /* create the missing slot and go on */
             child = Object::New(ctx->isolate);
             if (!parent->Set(context, slot, child).IsJust()) {
-                croak("could not set parent slot");
+                pl_set_pending_error("could not set parent slot\n");
+                break;
             }
         }
         parent = Local<Object>::Cast(child);
@@ -593,7 +657,7 @@ bool find_object(V8Context* ctx, const char* name, Local<Context>& context, Loca
     }
     Local<Value> child;
     if (!parent->Get(context, slot).ToLocal(&child)) {
-        croak("could not get object slot");
+        pl_set_pending_error("could not get object slot\n");
         return false;
     }
     object = Local<Object>::Cast(child);
