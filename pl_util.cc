@@ -1,6 +1,40 @@
+#include <stdarg.h>
 #include <stdio.h>
 #include <sys/time.h>
 #include "pl_util.h"
+
+#define PENDING_ERROR_SIZE 4096
+
+static char pending_error[PENDING_ERROR_SIZE];
+static int pending_error_set = 0;
+
+void pl_set_pending_error(const char* fmt, ...)
+{
+    if (pending_error_set) {
+        return; /* keep the first error, it is the most informative one */
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(pending_error, PENDING_ERROR_SIZE, fmt, ap);
+    va_end(ap);
+    pending_error_set = 1;
+}
+
+int pl_has_pending_error(void)
+{
+    return pending_error_set;
+}
+
+const char* pl_get_pending_error(void)
+{
+    return pending_error;
+}
+
+void pl_clear_pending_error(void)
+{
+    pending_error_set = 0;
+    pending_error[0] = '\0';
+}
 
 #define FILE_MEMORY_STATUS "/proc/self/statm"
 
