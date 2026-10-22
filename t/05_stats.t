@@ -2,6 +2,7 @@ use strict;
 use warnings;
 
 use Data::Dumper;
+use Scalar::Util qw(looks_like_number);
 use Test::More;
 
 my $CLASS = 'JavaScript::V8::XS';
@@ -36,7 +37,13 @@ sub test_stats {
                     my $data = $stats->{$category};
                     foreach my $name (qw/ memory_bytes elapsed_us /) {
                         ok(exists $data->{$name}, "name $name exists in stats for $category");
-                        ok($data->{$name} >= 0, "name $name has a valid value in stats for $category");
+                        # memory_bytes is a delta of process memory and can
+                        # be negative if V8 releases memory (e.g. on GC)
+                        if ($name eq 'memory_bytes') {
+                            ok(looks_like_number($data->{$name}), "name $name has a valid value in stats for $category");
+                        } else {
+                            ok($data->{$name} >= 0, "name $name has a valid value in stats for $category");
+                        }
                     }
                 }
             }
