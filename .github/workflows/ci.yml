@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: perl ${{ matrix.perl }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        perl: ['5.36', '5.42', 'latest']
+    env:
+      NODEJS_VERSION: '20.12.1.0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: ${{ matrix.perl }}
+
+      - run: perl -V
+
+      # Makefile.PL needs some of these at configure time, so install them
+      # explicitly instead of relying on --installdeps.
+      - name: Install dependencies
+        run: >
+          cpanm -n --quiet
+          ExtUtils::MakeMaker
+          ExtUtils::XSpp
+          File::Copy::Recursive
+          Text::Trim
+          Path::Tiny
+          JSON::PP
+          Test::More
+          Test::Output
+          Test::Exception
+
+      - name: Cache libv8
+        uses: actions/cache@v4
+        with:
+          path: libv8
+          key: libv8-${{ env.NODEJS_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Configure
+        run: perl Makefile.PL
+
+      - name: Build
+        run: make -j "$(nproc)"
+
+      - name: Test
+        run: make test
