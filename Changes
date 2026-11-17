@@ -1,3 +1,9 @@
+0.000017    2026-11-17
+            * fix segfault when running running under perl 5.42
+            * allow setting PERL_DL_NONLAZY
+            * allow compiling for multiple versions of v8
+            * update to API from NodeJS 20.x
+
 0.000016    2019-09-02
             * Update Makefile.PL to work on Linux and Mac
             * Allow reading V8 config from a json file (default: version 6)
